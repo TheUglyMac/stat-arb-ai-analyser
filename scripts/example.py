@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> None:
         end=end,
         interval=args.interval,
         base_currency=args.base_currency,
-        fx_tickers=fx_mapping,
+        fx_tickers=fx_mapping
     )
 
     print("Aligned data head:")
@@ -167,6 +167,7 @@ def main(argv: list[str] | None = None) -> None:
         print("WARNING: Spread may not be stationary at the 5% level.")
 
     results = run_multi_window_backtest(spread, windows=args.windows, num_std=args.k, fee=args.fee)
+
 
     print("\nBacktest summary")
     for window, result in results.items():

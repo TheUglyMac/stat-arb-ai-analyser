@@ -2,29 +2,23 @@
 
 This repository contains a minimal yet extensible Python implementation of a
 statistical arbitrage pipeline focused on pair trading and mean-reversion. It
-can fetch market data from pluggable providers, normalise instruments to a
-common currency, estimate a hedge ratio, validate stationarity, generate
-Bollinger-band trading signals, run a simple backtest, and visualise the
-results.
-
-The default setup ships with a CSV-based data provider for offline
-experimentation and a Yahoo Finance provider for live downloads (requires
-network access). The design leaves space to plug in further providers such as
-OANDA or custom APIs.
+fetches historical prices from the OANDA v20 REST API (using your personal API
+token), normalises instruments to a common currency, estimates a hedge ratio,
+validates stationarity, generates Bollinger-band trading signals, runs a simple
+backtest, and visualises the results.
 
 ## Project structure
 
 ```
 stat-arb-ai-analyser/
-├── data/                  # Sample CSV data used by the example script
-├── scripts/example.py     # End-to-end demonstration
+├── scripts/example.py     # End-to-end demonstration using OANDA data
 └── stat_arb/              # Library package with reusable components
 ```
 
 Key modules:
 
-- `stat_arb.data_providers`: Data provider abstraction, CSV and Yahoo
-  implementations.
+- `stat_arb.data_providers`: Data provider abstraction and the OANDA
+  implementation.
 - `stat_arb.data`: Helpers to load, align, and currency-normalise price series.
 - `stat_arb.hedge`: OLS hedge ratio estimation and spread calculation.
 - `stat_arb.stationarity`: Augmented Dickey-Fuller test wrapper.
@@ -42,15 +36,15 @@ dependencies isolated from the rest of your system.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install pandas numpy statsmodels matplotlib yfinance
+pip install pandas numpy statsmodels matplotlib requests python-dotenv
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
 py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-py -m pip install pandas numpy statsmodels matplotlib yfinance
+\.\.venv\Scripts\Activate.ps1
+py -m pip install pandas numpy statsmodels matplotlib requests python-dotenv
 ```
 
 > **Note**
@@ -58,60 +52,72 @@ py -m pip install pandas numpy statsmodels matplotlib yfinance
 > `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` once
 > and then re-run the activation command.
 
-The Yahoo provider imports `yfinance` lazily; install it only if you plan to
-use it.
+`python-dotenv` is optional, but convenient for loading the API key from a
+local `.env` file.
 
-## Quick start (CSV example)
+## Configure OANDA access
 
-The repository includes synthetic CSV data that mimics two equities priced in
-USD and EUR, plus a EURUSD FX series. Run the example script to execute the
-full workflow and produce summary statistics as well as plots.
+Create a personal access token from the OANDA dashboard (practice or live) and
+expose it via an environment variable before running any scripts:
 
 ```bash
-python -m scripts.example
+export OANDA_API_KEY="your-api-token"
+# Optional: set the environment if you want to target live instead of practice
+export OANDA_ENV="practice"
 ```
 
-On Windows, run the script with the `py` launcher instead:
+On Windows PowerShell use `setx` or `$env:OANDA_API_KEY="..."`. When
+`python-dotenv` is installed you can instead create a `.env` file with the same
+variables and they will be loaded automatically by the example script.
 
-```powershell
-py -m scripts.example
+## Quick start (OANDA example)
+
+With the environment variables in place, run the end-to-end example to download
+two instruments from OANDA, compute the spread, evaluate stationarity, backtest
+multiple Bollinger windows, and generate diagnostic plots:
+
+```bash
+python -m scripts.example EUR_USD GBP_USD --interval 1h --windows 8 40 200 --k 1.75 --fee 0.6
 ```
 
-This prints the aligned dataset, hedge ratio, ADF test results, and a
-multi-window backtest summary. A plot combining the spread, Bollinger bands,
-trade markers, and equity curve is saved to
-`example_output.png` in the repository root.
+On Windows PowerShell, launch the script with `py` instead of `python`.
+
+The script prints the aligned dataset head, hedge ratio, ADF test summary, and
+backtest statistics for each window. It saves a figure combining the spread,
+bands, trade markers, and equity curve to the location provided via
+`--plot-path` (defaults to `example_output.png`).
+
+Use the `--fx` option when one of the instruments trades in a different
+currency than your chosen base. For example, if the second leg is quoted in EUR
+but you want to analyse in USD, append `--fx TICKER=EUR_USD` to the command so
+that the loader can fetch the FX series for currency conversion.
 
 ## Using the library programmatically
 
-A minimal end-to-end flow looks like this:
+Below is a minimal end-to-end flow using the library components directly:
 
 ```python
 from datetime import datetime, timezone
+
 from stat_arb import (
-    CSVDataProvider,
-    load_pair_data,
-    estimate_hedge_ratio,
-    compute_spread,
+    OandaDataProvider,
     adf_test,
+    compute_spread,
+    estimate_hedge_ratio,
+    load_pair_data,
     run_multi_window_backtest,
 )
 
-provider = CSVDataProvider({
-    "SPY": {"path": "spy.csv", "currency": "USD"},
-    "DAX": {"path": "dax.csv", "currency": "EUR"},
-    "EURUSD": {"path": "eurusd.csv", "currency": "USD"},
-})
+provider = OandaDataProvider(api_key="<token>", environment="practice")
 
 pair = load_pair_data(
     provider,
-    ticker_a="SPY",
-    ticker_b="DAX",
+    ticker_a="EUR_USD",
+    ticker_b="GBP_USD",
     start=datetime(2023, 1, 1, tzinfo=timezone.utc),
     end=datetime(2024, 1, 1, tzinfo=timezone.utc),
-    interval="1D",
+    interval="1h",
     base_currency="USD",
-    fx_tickers={"DAX": "EURUSD"},
 )
 
 hedge = estimate_hedge_ratio(pair.frame["A"], pair.frame["B"])
@@ -120,31 +126,13 @@ print(adf_test(spread))
 results = run_multi_window_backtest(spread, windows=[20, 60], num_std=2.0, fee=0.5)
 ```
 
-Swap in `YahooFinanceDataProvider` when live data is required:
-
-```python
-from stat_arb import YahooFinanceDataProvider
-
-provider = YahooFinanceDataProvider()
-pair = load_pair_data(
-    provider,
-    ticker_a="TM",  # Toyota Motors
-    ticker_b="VOW3.DE",  # Volkswagen (EUR)
-    start=datetime(2023, 1, 1, tzinfo=timezone.utc),
-    end=datetime(2025, 1, 1, tzinfo=timezone.utc),
-    interval="1d",
-    base_currency="USD",
-    fx_tickers={"VOW3.DE": "EURUSD=X"},
-)
-```
-
 The helper automatically aligns timestamps (UTC), converts currencies using the
-provided FX series, and returns a tidy dataframe ready for analysis.
+provided FX series (if any), and returns a tidy dataframe ready for analysis.
 
 ## Extending the system
 
-- Implement new providers by inheriting from `DataProvider` and returning
-  `PriceData` objects.
+- Implement additional data sources by inheriting from `DataProvider` and
+  returning `PriceData` objects.
 - Add alternative hedge estimators or signal generators with additional
   modules—`load_pair_data` and the backtester expect regular pandas series so
   they compose with custom analytics easily.

@@ -1,54 +1,151 @@
-"""Example end-to-end workflow using the CSV data provider."""
+"""Example end-to-end workflow using the OANDA data provider."""
 from __future__ import annotations
 
+import argparse
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 
 import matplotlib.pyplot as plt
 
+try:  # Optional dependency, only needed for local development convenience
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional helper
+    load_dotenv = None  # type: ignore[assignment]
+
 from stat_arb import (
-    CSVDataProvider,
-    load_pair_data,
-    estimate_hedge_ratio,
-    compute_spread,
+    OandaDataProvider,
     adf_test,
-    run_multi_window_backtest,
-    plot_spread_with_bands,
+    compute_spread,
+    estimate_hedge_ratio,
+    load_pair_data,
     plot_equity_curve,
+    plot_spread_with_bands,
+    run_multi_window_backtest,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
 
-def main() -> None:
-    provider = CSVDataProvider(
-        {
-            "A": {
-                "path": "data/sample_A.csv",
-                "currency": "USD",
-            },
-            "B": {
-                "path": "data/sample_B.csv",
-                "currency": "EUR",
-            },
-            "EURUSD": {
-                "path": "data/sample_EURUSD.csv",
-                "currency": "USD",
-            },
-        }
-    )
+def _parse_datetime(value: str) -> datetime:
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
-    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    end = datetime(2024, 6, 28, tzinfo=timezone.utc)
+
+def _parse_kv_pairs(values: list[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for entry in values:
+        if "=" not in entry:
+            raise ValueError(f"Expected key=value mapping, got {entry!r}")
+        key, val = entry.split("=", 1)
+        mapping[key.strip()] = val.strip()
+    return mapping
+
+
+def _default_start_end() -> tuple[datetime, datetime]:
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=180)
+    return start, now
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run a stat arb backtest using OANDA data.")
+    parser.add_argument("ticker_a", help="First instrument symbol (e.g. EUR_USD)")
+    parser.add_argument("ticker_b", help="Second instrument symbol (e.g. GBP_USD)")
+    parser.add_argument(
+        "--start",
+        type=_parse_datetime,
+        help="Inclusive start timestamp (ISO 8601, default: 180 days ago)",
+    )
+    parser.add_argument(
+        "--end",
+        type=_parse_datetime,
+        help="Exclusive end timestamp (ISO 8601, default: now)",
+    )
+    parser.add_argument(
+        "--interval",
+        default="1h",
+        help="Bar interval (e.g. 1m, 5m, 1h, 1d). See OANDA granularity docs for supported values.",
+    )
+    parser.add_argument(
+        "--base-currency",
+        default="USD",
+        help="Target currency for analysis (default: USD)",
+    )
+    parser.add_argument(
+        "--fx",
+        action="append",
+        default=[],
+        help="Optional currency conversion mapping in the form SYMBOL=FX_PAIR. Repeatable.",
+    )
+    parser.add_argument(
+        "--windows",
+        type=int,
+        nargs="+",
+        default=[10, 20, 40],
+        help="Lookback windows for Bollinger bands (default: 10 20 40)",
+    )
+    parser.add_argument(
+        "--k",
+        type=float,
+        default=1.5,
+        help="Number of standard deviations for the Bollinger bands (default: 1.5)",
+    )
+    parser.add_argument(
+        "--fee",
+        type=float,
+        default=0.1,
+        help="Per-trade transaction cost deducted in spread units (default: 0.1)",
+    )
+    parser.add_argument(
+        "--environment",
+        choices=["practice", "live"],
+        default=os.environ.get("OANDA_ENV", "practice"),
+        help="OANDA environment to use (default sourced from OANDA_ENV or 'practice')",
+    )
+    parser.add_argument(
+        "--plot-path",
+        default="example_output.png",
+        help="File path for the output plot (default: example_output.png)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    if load_dotenv is not None:
+        load_dotenv()
+
+    parser = build_argument_parser()
+    args = parser.parse_args(argv)
+
+    api_key = os.environ.get("OANDA_API_KEY")
+    if not api_key:
+        raise RuntimeError("Set the OANDA_API_KEY environment variable before running the script.")
+
+    start_default, end_default = _default_start_end()
+    start = args.start or start_default
+    end = args.end or end_default
+    try:
+        fx_mapping = _parse_kv_pairs(args.fx) if args.fx else None
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    provider = OandaDataProvider(api_key=api_key, environment=args.environment)
+
     pair = load_pair_data(
         provider,
-        ticker_a="A",
-        ticker_b="B",
+        ticker_a=args.ticker_a,
+        ticker_b=args.ticker_b,
         start=start,
         end=end,
-        interval="1D",
-        base_currency="USD",
-        fx_tickers={"B": "EURUSD"},
+        interval=args.interval,
+        base_currency=args.base_currency,
+        fx_tickers=fx_mapping
     )
 
     print("Aligned data head:")
@@ -69,10 +166,8 @@ def main() -> None:
     if adf_result.p_value > 0.05:
         print("WARNING: Spread may not be stationary at the 5% level.")
 
-    windows = [10, 20, 40]
-    k = 1.5
-    fee = 0.1
-    results = run_multi_window_backtest(spread, windows=windows, num_std=k, fee=fee)
+    results = run_multi_window_backtest(spread, windows=args.windows, num_std=args.k, fee=args.fee)
+
 
     print("\nBacktest summary")
     for window, result in results.items():
@@ -92,9 +187,8 @@ def main() -> None:
     plot_spread_with_bands(spread, best_window.bands, best_window.trades, ax=axes[0])
     plot_equity_curve(best_window.equity_curve, ax=axes[1])
     plt.tight_layout()
-    output_path = "example_output.png"
-    fig.savefig(output_path, dpi=150)
-    print(f"Saved plot to {output_path}")
+    fig.savefig(args.plot_path, dpi=150)
+    print(f"Saved plot to {args.plot_path}")
 
 
 if __name__ == "__main__":

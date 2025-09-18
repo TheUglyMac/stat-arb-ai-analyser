@@ -31,6 +31,20 @@ Key modules:
 Python 3.11+ is recommended. Creating a virtual environment keeps the project
 dependencies isolated from the rest of your system.
 
+Clone the repository and change into the project directory before creating the environment:
+
+```bash
+git clone https://github.com/TheUglyMac/stat-arb-ai-analyser.git
+cd stat-arb-ai-analyser
+```
+
+On Windows PowerShell the equivalent commands are:
+
+```powershell
+git clone https://github.com/TheUglyMac/stat-arb-ai-analyser.git
+Set-Location .\stat-arb-ai-analyser
+```
+
 ### macOS / Linux
 
 ```bash
@@ -43,7 +57,7 @@ pip install pandas numpy statsmodels matplotlib requests python-dotenv
 
 ```powershell
 py -3 -m venv .venv
-\.\.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 py -m pip install pandas numpy statsmodels matplotlib requests python-dotenv
 ```
 
@@ -66,11 +80,17 @@ export OANDA_API_KEY="your-api-token"
 export OANDA_ENV="practice"
 ```
 
-On Windows PowerShell use `setx` or `$env:OANDA_API_KEY="..."`. When
-`python-dotenv` is installed you can instead create a `.env` file with the same
-variables and they will be loaded automatically by the example script.
+On Windows PowerShell use `setx OANDA_API_KEY "..."` to persist the value (the
+terminal must be restarted afterwards) or `$env:OANDA_API_KEY="..."` to set it
+for the current session. When `python-dotenv` is installed you can instead
+create a `.env` file with the same variables and they will be loaded
+automatically by the example script.
 
 ## Quick start (OANDA example)
+
+All of the following commands should be executed from the repository root (the
+folder that contains the `scripts/` and `stat_arb/` directories). After cloning
+you can `cd` into it on Unix-like systems or run `Set-Location .\stat-arb-ai-analyser` in PowerShell.
 
 With the environment variables in place, run the end-to-end example to download
 two instruments from OANDA, compute the spread, evaluate stationarity, backtest
